@@ -333,6 +333,8 @@ void HandleMatching2HandshakePacket(u32 from_addr, u16 from_port, bool relayed,
         return;
     }
 
+    std::lock_guard lock(Matching2StateMutex());
+
     ContextObject* ctx = FindContextForMatching2Packet(pkt);
     if (!ctx) {
         LOG_DEBUG(Lib_NpMatching2, "Matching2 handshake: no ctx for room={} to_member={}",
@@ -345,6 +347,18 @@ void HandleMatching2HandshakePacket(u32 from_addr, u16 from_port, bool relayed,
     auto room_it = ctx->room_cache.find(room_id);
     if (room_it == ctx->room_cache.end() ||
         !ShouldConnectToPeer(room_it->second, ctx->my_member_id, member_id)) {
+        return;
+    }
+    // The sender has to be a member of the room as this console currently knows it. A packet from
+    // a member that has already left - and a room with three or more players churns members
+    // constantly - used to create a peer entry that was not in the member list. Nothing could then
+    // ever be sent to it, because SendMatching2Handshake bails out for a non-member before it
+    // stamps first_attempt, so the entry sat at "state=pending sent=0 age=0" forever, was retried
+    // every 5 ms, and was counted against the room for the rest of the session.
+    if (room_it->second.members.find(member_id) == room_it->second.members.end()) {
+        LOG_DEBUG(Lib_NpMatching2,
+                  "Matching2 handshake from member {} which is not in room {} any more: dropped",
+                  member_id, room_id);
         return;
     }
 
@@ -492,17 +506,22 @@ void Matching2HandshakeThreadMain() {
     auto last_stun_ping = std::chrono::steady_clock::time_point{};
     auto last_status_log = std::chrono::steady_clock::time_point{};
     while (!g_matching2_stop.load(std::memory_order_relaxed)) {
-        for (u32 drained = 0; drained < kMatching2MaxDrainPerTick; ++drained) {
-            Matching2HandshakePacket pkt{};
-            u32 from_addr = 0;
-            u16 from_port = 0;
-            bool relayed = false;
-            const int rc =
-                Net::P2PMatching2RecvFrom(&pkt, sizeof(pkt), &from_addr, &from_port, &relayed);
-            if (rc != sizeof(pkt)) {
-                break;
+        // Held for one batch of received packets at a time rather than for the whole tick: the
+        // sleep at the bottom of the loop must not be inside it.
+        {
+            std::lock_guard lock(Matching2StateMutex());
+            for (u32 drained = 0; drained < kMatching2MaxDrainPerTick; ++drained) {
+                Matching2HandshakePacket pkt{};
+                u32 from_addr = 0;
+                u16 from_port = 0;
+                bool relayed = false;
+                const int rc =
+                    Net::P2PMatching2RecvFrom(&pkt, sizeof(pkt), &from_addr, &from_port, &relayed);
+                if (rc != sizeof(pkt)) {
+                    break;
+                }
+                HandleMatching2HandshakePacket(from_addr, from_port, relayed, pkt);
             }
-            HandleMatching2HandshakePacket(from_addr, from_port, relayed, pkt);
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -518,6 +537,9 @@ void Matching2HandshakeThreadMain() {
                                      NpSignaling::Stubs::MmServerUdpPort());
         }
         for (u32 id = 1; id <= ContextManager::kMaxContexts; ++id) {
+            // One context at a time, so a room event arriving on the ShadNet reader thread is
+            // never made to wait for the whole sweep.
+            std::lock_guard lock(Matching2StateMutex());
             ContextObject* ctx =
                 ContextManager::Instance().Get(static_cast<OrbisNpMatching2ContextId>(id));
             if (!ctx) {
@@ -532,6 +554,26 @@ void Matching2HandshakeThreadMain() {
             auto room_it = ctx->room_cache.find(ctx->room_id);
             if (room_it == ctx->room_cache.end()) {
                 continue;
+            }
+            // Drop entries for members the room no longer has. A member that leaves is erased
+            // from the peer table by the room-event handler, but a stale handshake packet can put
+            // it straight back, and a room whose membership keeps changing - which is exactly what
+            // a room with too many players to settle looks like - accumulates one per rejoin.
+            // Without this the table only ever grows, and the status line reports peers that
+            // belong to no member.
+            for (auto peer_it = ctx->peers.begin(); peer_it != ctx->peers.end();) {
+                if (room_it->second.members.find(peer_it->first) != room_it->second.members.end()) {
+                    ++peer_it;
+                    continue;
+                }
+                if (peer_it->second.relay_active && peer_it->second.addr != 0 &&
+                    peer_it->second.port != 0) {
+                    Net::SetP2PPeerRelayed(peer_it->second.addr, peer_it->second.port, false);
+                }
+                LOG_DEBUG(Lib_NpMatching2,
+                          "Matching2 peer {} dropped: it is no longer a member of room {}",
+                          peer_it->first, ctx->room_id);
+                peer_it = ctx->peers.erase(peer_it);
             }
             if (should_log_status) {
                 LogMatching2PeerStatus(*ctx);
@@ -645,6 +687,7 @@ void QueueMatching2SignalingEvent(ContextObject& ctx, OrbisNpMatching2RoomId roo
 
 void StartMatching2PeerHandshake(ContextObject& ctx, OrbisNpMatching2RoomId room_id,
                                  OrbisNpMatching2RoomMemberId member_id) {
+    std::lock_guard lock(Matching2StateMutex());
     auto room_it = ctx.room_cache.find(room_id);
     if (room_it == ctx.room_cache.end() ||
         !ShouldConnectToPeer(room_it->second, ctx.my_member_id, member_id)) {
@@ -678,6 +721,7 @@ void StartMatching2PeerHandshake(ContextObject& ctx, OrbisNpMatching2RoomId room
 }
 
 void StartMatching2SignalingForRoomPeers(ContextObject& ctx, OrbisNpMatching2RoomId room_id) {
+    std::lock_guard lock(Matching2StateMutex());
     const auto room_it = ctx.room_cache.find(room_id);
     if (room_it == ctx.room_cache.end()) {
         return;
@@ -689,6 +733,7 @@ void StartMatching2SignalingForRoomPeers(ContextObject& ctx, OrbisNpMatching2Roo
 
 void QueueMatching2DeadForRoomPeers(ContextObject& ctx, OrbisNpMatching2RoomId room_id,
                                     s32 error_code) {
+    std::lock_guard lock(Matching2StateMutex());
     auto room_it = ctx.room_cache.find(room_id);
     if (room_it == ctx.room_cache.end()) {
         return;
@@ -741,6 +786,7 @@ void StopMatching2HandshakeThread() {
 }
 
 u32 GetRoomPingUs(const ContextObject& ctx, OrbisNpMatching2RoomId roomId) {
+    std::lock_guard lock(Matching2StateMutex());
     const auto room_it = ctx.room_cache.find(roomId);
     if (room_it == ctx.room_cache.end()) {
         return 0;
@@ -764,6 +810,7 @@ u32 GetRoomPingUs(const ContextObject& ctx, OrbisNpMatching2RoomId roomId) {
 }
 
 void* BuildSignalingGetPingInfoPayload(ContextObject& ctx, OrbisNpMatching2RoomId roomId) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p =
         ctx.request_payload_override ? *ctx.request_payload_override : ctx.request_payload;
     p.Reset();
@@ -790,6 +837,7 @@ void* BuildSignalingGetPingInfoPayload(ContextObject& ctx, OrbisNpMatching2RoomI
 s32 FillMatching2ConnectionInfo(const ContextObject& ctx, OrbisNpMatching2RoomId roomId,
                                 OrbisNpMatching2RoomMemberId memberId, u32 infoType, void* connInfo,
                                 bool a_variant) {
+    std::lock_guard lock(Matching2StateMutex());
     if (!connInfo) {
         LOG_ERROR(Lib_NpMatching2, "connInfo null");
         return ORBIS_NP_MATCHING2_ERROR_INVALID_ARGUMENT;

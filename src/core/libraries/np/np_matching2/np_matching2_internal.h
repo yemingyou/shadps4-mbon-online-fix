@@ -432,6 +432,65 @@ struct NpMatching2State {
 
 extern NpMatching2State g_state;
 
+// Serialises every read and write of a ContextObject's peer table, its room cache and its
+// callback payload.
+//
+// Four threads reach that state at once: the NpMatching2 handshake thread, the ShadNet reader
+// thread, the guest's own thread and the event dispatcher. With a stable two-player room they
+// barely overlap, which is why the room used to work. As soon as a third member is in the room -
+// or a member leaves and rejoins, which a room that is failing to settle does constantly - the
+// reader thread erases peers and rewrites the room cache while the handshake thread is holding a
+// PeerInfo& for one of those same peers and walking the peer map, and the guest starts polling
+// GetRoomDataInternal hard enough to overlap with the reply payload the reader thread is building
+// into the very same per-context CallbackPayload. A peer erased out from under a reference is a
+// write into freed memory, and two threads resetting the same unique_ptr and appending to the same
+// vector is a double free; the STL notices the corrupted container and throws, nothing catches it,
+// and the emulator dies with "Unhandled Exception code 0xe06d7363".
+//
+// Recursive because the helpers nest: HandleMatching2HandshakePacket already holds it when it
+// calls SendMatching2Handshake and MarkMatching2PeerActive, and every Build*Payload nests into
+// RequestPayload.
+std::recursive_mutex& Matching2StateMutex();
+
+// Guards one scope against the other three threads above. Use as: <code>std::lock_guard
+// lock(Matching2StateMutex());</code>
+//
+// Gives one request its own callback payload instead of the context's single shared
+// request_payload slot, and hands ownership to the caller to move into the event.
+//
+// A reply that arrives over ShadNet is built on the reader thread and fires later, so the events
+// it schedules already carry their own payload. The requests the title answers locally - the room
+// data it polls for every frame, the ping info - used to build straight into ctx.request_payload,
+// one slot for the whole context. The title issues those back to back, and every build starts with
+// Reset(), which deletes the room data and the member list the *previous* build handed out. The
+// earlier event then fired with a pointer to freed memory. Whichever container Reset() had already
+// released, the STL reports the inconsistency on the next operation as a C++ exception, and with
+// three or more players in the room there is always a next operation.
+//
+// Use as:
+//   ScopedRequestPayload payload(ctx);
+//   void* data = BuildXxxPayload(ctx, ...);
+//   ev.request_payload_owner = payload.Owner();   // keeps it alive until the event fires
+class ScopedRequestPayload {
+public:
+    explicit ScopedRequestPayload(ContextObject& ctx) : m_ctx(ctx), m_owner(std::make_shared<CallbackPayload>()) {
+        m_ctx.request_payload_override = m_owner.get();
+    }
+    ~ScopedRequestPayload() {
+        m_ctx.request_payload_override = nullptr;
+    }
+    ScopedRequestPayload(const ScopedRequestPayload&) = delete;
+    ScopedRequestPayload& operator=(const ScopedRequestPayload&) = delete;
+
+    std::shared_ptr<CallbackPayload>& Owner() {
+        return m_owner;
+    }
+
+private:
+    ContextObject& m_ctx;
+    std::shared_ptr<CallbackPayload> m_owner;
+};
+
 OrbisNpMatching2RequestId AllocRequestId();
 
 bool IsInitialized();

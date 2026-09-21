@@ -20,6 +20,13 @@ NpMatching2State g_state;
 
 namespace {
 
+// Function-local so it is constructed before any thread can reach it, whatever order the
+// translation units' static initialisers happen to run in.
+std::recursive_mutex& StateMutexImpl() {
+    static std::recursive_mutex mutex;
+    return mutex;
+}
+
 CallbackPayload& RequestPayload(ContextObject& ctx) {
     return ctx.request_payload_override ? *ctx.request_payload_override : ctx.request_payload;
 }
@@ -64,6 +71,7 @@ void ReserveExternalRoomPayloadStorage(CallbackPayload& p, const Reply& resp) {
 
 void BuildCreateJoinRoomPayloadCommon(ContextObject& ctx,
                                       const shadnet::CreateJoinRoomResponse& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     const auto& rd = resp.room_data();
 
@@ -231,6 +239,7 @@ OrbisNpMatching2RoomMemberBinAttrInternal* AppendMemberBinAttrs(
 }
 
 void* BuildCreateJoinRoomPayload(ContextObject& ctx, const shadnet::CreateJoinRoomResponse& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
     BuildCreateJoinRoomPayloadCommon(ctx, resp);
@@ -278,6 +287,7 @@ void* BuildCreateJoinRoomPayload(ContextObject& ctx, const shadnet::CreateJoinRo
 }
 
 void* BuildCreateJoinRoomPayloadA(ContextObject& ctx, const shadnet::CreateJoinRoomResponse& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
     BuildCreateJoinRoomPayloadCommon(ctx, resp);
@@ -326,6 +336,7 @@ void* BuildCreateJoinRoomPayloadA(ContextObject& ctx, const shadnet::CreateJoinR
 }
 
 void* BuildLeaveRoomPayload(ContextObject& ctx, const shadnet::LeaveRoomReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
 
@@ -345,6 +356,7 @@ void* BuildLeaveRoomPayload(ContextObject& ctx, const shadnet::LeaveRoomReply& r
 }
 
 void* BuildGetWorldInfoListPayload(ContextObject& ctx, const shadnet::GetWorldInfoListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
 
@@ -385,6 +397,7 @@ void* BuildGetWorldInfoListPayload(ContextObject& ctx, const shadnet::GetWorldIn
 }
 
 void* BuildGetLobbyInfoListPayload(ContextObject& ctx, const shadnet::GetLobbyInfoListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
 
@@ -415,6 +428,7 @@ void* BuildGetLobbyInfoListPayload(ContextObject& ctx, const shadnet::GetLobbyIn
 }
 
 void* BuildSearchRoomPayload(ContextObject& ctx, const shadnet::SearchRoomReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
     ReserveExternalRoomPayloadStorage(p, resp);
@@ -519,6 +533,7 @@ void* BuildSearchRoomPayload(ContextObject& ctx, const shadnet::SearchRoomReply&
 }
 
 void* BuildSearchRoomPayloadA(ContextObject& ctx, const shadnet::SearchRoomReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
     ReserveExternalRoomPayloadStorage(p, resp);
@@ -624,6 +639,7 @@ void* BuildSearchRoomPayloadA(ContextObject& ctx, const shadnet::SearchRoomReply
 
 void* BuildGetRoomDataExternalListPayload(ContextObject& ctx,
                                           const shadnet::GetRoomDataExternalListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
     ReserveExternalRoomPayloadStorage(p, resp);
@@ -728,6 +744,7 @@ void* BuildGetRoomDataExternalListPayload(ContextObject& ctx,
 
 void* BuildGetRoomDataExternalListPayloadA(ContextObject& ctx,
                                            const shadnet::GetRoomDataExternalListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
     ReserveExternalRoomPayloadStorage(p, resp);
@@ -832,6 +849,7 @@ void* BuildGetRoomDataExternalListPayloadA(ContextObject& ctx,
 
 void* BuildGetRoomMemberDataExternalListPayload(
     ContextObject& ctx, const shadnet::GetRoomMemberDataExternalListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
 
@@ -861,6 +879,7 @@ void* BuildGetRoomMemberDataExternalListPayload(
 
 void* BuildGetRoomMemberDataExternalListPayloadA(
     ContextObject& ctx, const shadnet::GetRoomMemberDataExternalListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
 
@@ -891,6 +910,7 @@ void* BuildGetRoomMemberDataExternalListPayloadA(
 }
 
 void* BuildGetUserInfoListPayload(ContextObject& ctx, const shadnet::GetUserInfoListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
 
@@ -941,6 +961,7 @@ void* BuildGetUserInfoListPayload(ContextObject& ctx, const shadnet::GetUserInfo
 }
 
 void* BuildGetUserInfoListPayloadA(ContextObject& ctx, const shadnet::GetUserInfoListReply& resp) {
+    std::lock_guard lock(Matching2StateMutex());
     CallbackPayload& p = RequestPayload(ctx);
     p.Reset();
 
@@ -993,6 +1014,7 @@ void* BuildGetUserInfoListPayloadA(ContextObject& ctx, const shadnet::GetUserInf
 }
 
 void* BuildGetRoomDataInternalPayload(ContextObject& ctx, OrbisNpMatching2RoomId room_id) {
+    std::lock_guard lock(Matching2StateMutex());
     const auto rc_it = ctx.room_cache.find(room_id);
     if (rc_it == ctx.room_cache.end()) {
         return nullptr;
@@ -1159,6 +1181,9 @@ ContextObject* ContextManager::GetLocked(OrbisNpMatching2ContextId ctx_id) {
 
 s32 ContextManager::CreateContext(const OrbisNpId* owner_np_id, OrbisNpServiceLabel service_label,
                                   OrbisNpMatching2ContextId* out_ctx_id, bool a_variant) {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     if (!out_ctx_id) {
         return ORBIS_NP_MATCHING2_ERROR_INVALID_ARGUMENT;
     }
@@ -1209,6 +1234,9 @@ ContextObject* ContextManager::Get(OrbisNpMatching2ContextId ctx_id) {
 }
 
 bool ContextManager::Destroy(OrbisNpMatching2ContextId ctx_id) {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     ContextObject* ctx = GetLocked(ctx_id);
     if (!ctx) {
@@ -1226,6 +1254,9 @@ bool ContextManager::Destroy(OrbisNpMatching2ContextId ctx_id) {
 }
 
 void ContextManager::CompleteStop(OrbisNpMatching2ContextId ctx_id) {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     ContextObject* ctx = GetLocked(ctx_id);
     if (!ctx) {
@@ -1241,6 +1272,9 @@ void ContextManager::CompleteStop(OrbisNpMatching2ContextId ctx_id) {
 }
 
 s32 ContextManager::Start(OrbisNpMatching2ContextId ctx_id) {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     ContextObject* ctx = GetLocked(ctx_id);
     if (!ctx) {
@@ -1257,6 +1291,9 @@ s32 ContextManager::Start(OrbisNpMatching2ContextId ctx_id) {
 }
 
 s32 ContextManager::Stop(OrbisNpMatching2ContextId ctx_id) {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     ContextObject* ctx = GetLocked(ctx_id);
     if (!ctx) {
@@ -1272,6 +1309,9 @@ s32 ContextManager::Stop(OrbisNpMatching2ContextId ctx_id) {
 }
 
 bool ContextManager::AbortStart(OrbisNpMatching2ContextId ctx_id) {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     ContextObject* ctx = GetLocked(ctx_id);
     if (!ctx || !ctx->started) {
@@ -1283,6 +1323,9 @@ bool ContextManager::AbortStart(OrbisNpMatching2ContextId ctx_id) {
 }
 
 std::vector<OrbisNpMatching2ContextId> ContextManager::StopAllStarted() {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     std::vector<OrbisNpMatching2ContextId> stopped;
     for (u32 id = 1; id <= kMaxContexts; ++id) {
@@ -1298,6 +1341,9 @@ std::vector<OrbisNpMatching2ContextId> ContextManager::StopAllStarted() {
 }
 
 void ContextManager::ApplyContextCallback(OrbisNpMatching2ContextCallback callback, void* arg) {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     m_pending_context_callback = callback;
     m_pending_context_callback_arg = arg;
@@ -1310,6 +1356,9 @@ void ContextManager::ApplyContextCallback(OrbisNpMatching2ContextCallback callba
 }
 
 void ContextManager::Reset() {
+    // Taken before m_mutex: the per-context state it guards outlives every lock the manager
+    // itself owns, and a caller that already holds it calls Get() from inside.
+    std::lock_guard state_lock(Matching2StateMutex());
     std::lock_guard lock(m_mutex);
     for (auto& ctx : m_contexts) {
         ctx.Reset();
@@ -1318,6 +1367,10 @@ void ContextManager::Reset() {
     m_next_id = 1;
     m_pending_context_callback = nullptr;
     m_pending_context_callback_arg = nullptr;
+}
+
+std::recursive_mutex& Matching2StateMutex() {
+    return StateMutexImpl();
 }
 
 OrbisNpMatching2RequestId AllocRequestId() {

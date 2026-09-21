@@ -237,6 +237,7 @@ void FailContextStart(OrbisNpMatching2ContextId ctx_id, s32 error_code) {
 // A request whose reply can no longer arrive must still complete: the title is waiting on this
 // callback and has no other way to learn the request is dead.
 void DispatchRequestFailure(const PendingRequest& pr, s32 error_code) {
+    std::lock_guard lock(Matching2StateMutex());
     if (ContextManager::Instance().Get(pr.ctx_id) == nullptr) {
         return;
     }
@@ -265,6 +266,7 @@ void DispatchRequestFailure(const PendingRequest& pr, s32 error_code) {
 
 void DispatchRequestComplete(const PendingRequest& pr, ShadNet::ErrorType error,
                              const std::vector<u8>& body) {
+    std::lock_guard lock(Matching2StateMutex());
     ContextObject* ctx = ContextManager::Instance().Get(pr.ctx_id);
     if (!ctx) {
         return;
@@ -461,6 +463,7 @@ void BuildMemberUpdate(CallbackPayload& p, const RoomCache& rc, const MemberCach
 }
 
 void HandleRoomEvent(const ShadNet::NotifyRoomEvent& n) {
+    std::lock_guard lock(Matching2StateMutex());
     ContextObject* ctx =
         ContextManager::Instance().Get(static_cast<OrbisNpMatching2ContextId>(n.ctx_id));
     if (!ctx) {
@@ -694,6 +697,7 @@ void HandleRoomEvent(const ShadNet::NotifyRoomEvent& n) {
 }
 
 void HandleRoomMessage(const ShadNet::NotifyRoomMessage& n) {
+    std::lock_guard lock(Matching2StateMutex());
     ContextObject* ctx =
         ContextManager::Instance().Get(static_cast<OrbisNpMatching2ContextId>(n.ctx_id));
     if (!ctx) {
@@ -747,6 +751,7 @@ void HandleRoomMessage(const ShadNet::NotifyRoomMessage& n) {
 // Runs on the ShadNet reader thread. It only fills the cache; whoever asked for the endpoint
 // picks it up on its next attempt, so nothing ever waits here.
 void HandleSignalingInfosReply(u64 pkt_id, ShadNet::ErrorType error, const std::vector<u8>& body) {
+    std::lock_guard lock(Matching2StateMutex());
     std::string target;
     {
         std::lock_guard lock(g_mm.sig_mutex);
@@ -827,6 +832,7 @@ void OnMatchingReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType er
 }
 
 void ExpireMatchingRequests() {
+    std::lock_guard lock(Matching2StateMutex());
     const auto now = std::chrono::steady_clock::now();
 
     std::vector<PendingRequest> expired;

@@ -559,6 +559,10 @@ s32 PS4_SYSV_ABI sceNpMatching2SignalingGetConnectionStatus(OrbisNpMatching2Cont
     constexpr s32 kInactive = 0;
     constexpr s32 kPending = 1;
     constexpr s32 kActive = 2;
+    // The room cache and the peer table are shared with the NpMatching2 handshake thread and the
+    // ShadNet reader thread; the title polls this once per peer per frame while a room is filling
+    // up, so it is the most likely place for the two to overlap.
+    std::lock_guard lock(Matching2StateMutex());
     const auto room_it = ctx->room_cache.find(roomId);
     const bool in_room = room_it != ctx->room_cache.end() &&
                          room_it->second.members.find(memberId) != room_it->second.members.end();
@@ -791,10 +795,17 @@ int PS4_SYSV_ABI sceNpMatching2GetRoomDataInternal(
         return ORBIS_NP_MATCHING2_ERROR_INVALID_CONTEXT_ID;
     }
 
+    // Declared before the payload so it is released last: the payload's destructor writes back to
+    // the context, and the scope it protects covers the request callback hand-off too.
+    std::lock_guard lock(Matching2StateMutex());
     StoreRequestCallback(ctx, requestOpt);
     const OrbisNpMatching2RequestId reqId = AllocRequestId();
     *requestId = reqId;
 
+    // This one is answered locally and fires later, and the title polls it every frame. Built into
+    // the context's shared payload slot it would be overwritten - and Reset() would delete the room
+    // data and member list - by the next poll before this request's callback ever ran.
+    ScopedRequestPayload payload(*ctx);
     void* request_data = BuildGetRoomDataInternalPayload(*ctx, request->roomId);
 
     PendingEvent ev{};
@@ -808,6 +819,7 @@ int PS4_SYSV_ABI sceNpMatching2GetRoomDataInternal(
     ev.request_cb = request_cb.callback;
     ev.request_cb_arg = request_cb.arg;
     ev.request_data = request_data;
+    ev.request_payload_owner = payload.Owner();
     ScheduleEvent(std::move(ev));
     return ORBIS_OK;
 }
@@ -1021,15 +1033,17 @@ int PS4_SYSV_ABI sceNpMatching2SignalingGetPingInfo(OrbisNpMatching2ContextId ct
         return ORBIS_NP_MATCHING2_ERROR_INVALID_CONTEXT_ID;
     }
 
-    const auto* request = static_cast<const OrbisNpMatching2SignalingGetPingInfoRequest*>(reqParam);
+    const auto* ping_request =
+        static_cast<const OrbisNpMatching2SignalingGetPingInfoRequest*>(reqParam);
+    std::lock_guard lock(Matching2StateMutex());
     StoreRequestCallback(ctx, static_cast<const OrbisNpMatching2RequestOptParam*>(optParam));
     const OrbisNpMatching2RequestId request_id = AllocRequestId();
     *reqId = request_id;
 
-    auto request_payload_owner = std::make_shared<CallbackPayload>();
-    ctx->request_payload_override = request_payload_owner.get();
-    void* request_data = BuildSignalingGetPingInfoPayload(*ctx, request->roomId);
-    ctx->request_payload_override = nullptr;
+    // Same reason as GetRoomDataInternal: built into the context's shared slot, the next poll
+    // would delete the objects this event is about to hand to the title.
+    ScopedRequestPayload payload(*ctx);
+    void* request_data = BuildSignalingGetPingInfoPayload(*ctx, ping_request->roomId);
 
     PendingEvent ev{};
     ev.type = PendingEvent::REQUEST_CB;
@@ -1042,7 +1056,7 @@ int PS4_SYSV_ABI sceNpMatching2SignalingGetPingInfo(OrbisNpMatching2ContextId ct
     ev.request_cb = request_cb.callback;
     ev.request_cb_arg = request_cb.arg;
     ev.request_data = request_data;
-    ev.request_payload_owner = std::move(request_payload_owner);
+    ev.request_payload_owner = payload.Owner();
     ScheduleEvent(std::move(ev));
     return ORBIS_OK;
 }
