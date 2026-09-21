@@ -832,7 +832,9 @@ void OnMatchingReply(ShadNet::CommandType cmd, u64 pkt_id, ShadNet::ErrorType er
 }
 
 void ExpireMatchingRequests() {
-    std::lock_guard lock(Matching2StateMutex());
+    // Named state_lock, not lock: this function already declares a `lock` further down for the
+    // signaling map, and a second `lock` in the same scope is a redefinition.
+    std::lock_guard state_lock(Matching2StateMutex());
     const auto now = std::chrono::steady_clock::now();
 
     std::vector<PendingRequest> expired;
