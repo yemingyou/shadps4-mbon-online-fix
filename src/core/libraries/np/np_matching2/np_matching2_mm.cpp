@@ -502,12 +502,27 @@ void HandleRoomEvent(const ShadNet::NotifyRoomEvent& n) {
             b.data = a.data;
         }
 
-        PeerInfo pi{};
-        pi.member_id = member_id;
-        pi.addr = mc.addr;
-        pi.port = mc.port;
-        SetNpOnlineId(pi.online_id, n.member_npid);
-        ctx->peers[member_id] = pi;
+        // Keep a record that is already there. A room whose membership keeps changing can deliver
+        // this event again for a member whose connection is up, and replacing the record would
+        // throw the established session away and restart the handshake from zero - the title then
+        // sees the peer fall back to pending, which is what stops a room of three or more from
+        // ever settling. Endpoints are refreshed, but only into an empty record: a live one holds
+        // the address the handshake actually succeeded on.
+        const auto existing_peer = ctx->peers.find(member_id);
+        if (existing_peer == ctx->peers.end()) {
+            PeerInfo pi{};
+            pi.member_id = member_id;
+            pi.addr = mc.addr;
+            pi.port = mc.port;
+            SetNpOnlineId(pi.online_id, n.member_npid);
+            ctx->peers.emplace(member_id, pi);
+        } else {
+            if (existing_peer->second.addr == 0)
+                existing_peer->second.addr = mc.addr;
+            if (existing_peer->second.port == 0)
+                existing_peer->second.port = mc.port;
+            SetNpOnlineId(existing_peer->second.online_id, n.member_npid);
+        }
 
         BuildMemberUpdate(p, room_it->second, mc, cause, ctx->a_variant);
         break;
@@ -535,6 +550,42 @@ void HandleRoomEvent(const ShadNet::NotifyRoomEvent& n) {
         u = OrbisNpMatching2RoomUpdate{};
         u.eventCause = cause;
         u.errorCode = n.error_code;
+        p.room_event_data = p.room_update.get();
+        break;
+    }
+    case ORBIS_NP_MATCHING2_ROOM_EVENT_ROOM_OWNER_CHANGED: {
+        // The owner left and the room moved to another member. Only a room of three or more
+        // reaches this: a two-member room is destroyed when either of them leaves, so the
+        // succession path never runs there. A client that ignores the event keeps the departed
+        // member as its owner and as its signaling main member - a member that no longer exists -
+        // and the title then never agrees with the server on the room state.
+        auto room_it = ctx->room_cache.find(room_id);
+        if (room_it == ctx->room_cache.end()) {
+            return;
+        }
+        RoomCache& rc = room_it->second;
+        const auto new_owner = static_cast<OrbisNpMatching2RoomMemberId>(n.member_id);
+        if (new_owner == 0) {
+            return;
+        }
+        const auto old_owner = rc.signaling_main_member;
+        rc.signaling_main_member = new_owner;
+        for (auto& [id, member] : rc.members) {
+            if (id == new_owner) {
+                member.flag_attr |= ORBIS_NP_MATCHING2_ROOMMEMBER_FLAG_ATTR_OWNER;
+            } else {
+                member.flag_attr &= ~ORBIS_NP_MATCHING2_ROOMMEMBER_FLAG_ATTR_OWNER;
+            }
+        }
+        rc.owner = (new_owner == ctx->my_member_id);
+        ctx->is_room_owner = rc.owner;
+        LOG_INFO(Lib_NpMatching2, "Matching2 room {} owner changed: {} -> {} (we are owner: {})",
+                 room_id, old_owner, new_owner, rc.owner);
+
+        p.room_update = std::make_unique<OrbisNpMatching2RoomUpdate>();
+        OrbisNpMatching2RoomUpdate& u = *p.room_update;
+        u = OrbisNpMatching2RoomUpdate{};
+        u.eventCause = cause;
         p.room_event_data = p.room_update.get();
         break;
     }
